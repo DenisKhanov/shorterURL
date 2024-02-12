@@ -28,7 +28,6 @@ func main() {
 		myRepository      services.Repository
 		repositoryReciver bool
 	)
-
 	cfg = config.NewConfig()
 	if cfg.EnvDataBase != "" {
 		confPool, err := pgxpool.ParseConfig(cfg.EnvDataBase)
@@ -40,7 +39,7 @@ func main() {
 		dbPool, err = pgxpool.NewWithConfig(context.Background(), confPool)
 		if err != nil {
 			logrus.Error("Don't connect to DB: ", err)
-			os.Exit(1)
+			logrus.Fatal(err)
 		}
 
 		defer dbPool.Close()
@@ -56,7 +55,7 @@ func main() {
 	myHandler := handlers.NewHandlers(myShorURLService, dbPool)
 
 	// Установка переменной окружения для отключения режима разработки
-	gin.SetMode(gin.ReleaseMode)
+	gin.SetMode(gin.DebugMode)
 	router := gin.Default()
 	// Use the pprof middleware
 	pprof.Register(router)
