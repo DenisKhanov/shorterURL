@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"github.com/DenisKhanov/shorterURL/internal/app/config"
 	"github.com/DenisKhanov/shorterURL/internal/app/handlers"
 	"github.com/DenisKhanov/shorterURL/internal/app/logcfg"
@@ -21,14 +20,17 @@ import (
 )
 
 func main() {
-	var (
-		dbPool            *pgxpool.Pool
-		err               error
-		cfg               *config.ENVConfig
-		myRepository      services.Repository
-		repositoryReciver bool
-	)
 
+	// Выводим сообщение о сборке проекта
+	config.PrintProjectInfo()
+
+	var (
+		dbPool             *pgxpool.Pool
+		err                error
+		cfg                *config.ENVConfig
+		myRepository       services.Repository
+		repositoryReceiver bool
+	)
 	cfg = config.NewConfig()
 	if cfg.EnvDataBase != "" {
 		confPool, err := pgxpool.ParseConfig(cfg.EnvDataBase)
@@ -40,14 +42,14 @@ func main() {
 		dbPool, err = pgxpool.NewWithConfig(context.Background(), confPool)
 		if err != nil {
 			logrus.Error("Don't connect to DB: ", err)
-			os.Exit(1)
+			logrus.Fatal(err)
 		}
 
 		defer dbPool.Close()
 		myRepository = repositories.NewURLInDBRepo(dbPool)
 	} else {
 		myRepository = repositories.NewURLInMemoryRepo(cfg.EnvStoragePath)
-		repositoryReciver = true
+		repositoryReceiver = true
 	}
 
 	logcfg.RunLoggerConfig(cfg.EnvLogLevel)
@@ -55,8 +57,8 @@ func main() {
 	myShorURLService := services.NewShortURLServices(myRepository, services.ShortURLServices{}, cfg.EnvBaseURL)
 	myHandler := handlers.NewHandlers(myShorURLService, dbPool)
 
-	// Установка переменной окружения для отключения режима разработки
-	gin.SetMode(gin.ReleaseMode)
+	// Установка переменной окружения для включения режима разработки
+	gin.SetMode(gin.DebugMode)
 	router := gin.Default()
 	// Use the pprof middleware
 	pprof.Register(router)
@@ -80,30 +82,36 @@ func main() {
 	privateRoutes.GET("/api/user/urls", myHandler.GetUserURLS)
 	privateRoutes.DELETE("/api/user/urls", myHandler.DelUserURLS)
 
-	server := &http.Server{Addr: cfg.EnvServAdr, Handler: router}
-
-	logrus.Info("Starting server on: ", cfg.EnvServAdr)
+	server := &http.Server{
+		Addr:    cfg.EnvServAdr,
+		Handler: router,
+	}
 
 	go func() {
-		if err = server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			logrus.Error(err)
+		if cfg.EnvHTTPS != "" {
+			logrus.Info("Starting server with TLS on: ", cfg.EnvServAdr)
+			if err = server.ListenAndServeTLS("cert.pem", "privateKey.pem"); !errors.Is(err, http.ErrServerClosed) {
+				logrus.Error(err)
+			}
+		} else {
+			logrus.Info("Starting server on: ", cfg.EnvServAdr)
+			if err = server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				logrus.Error(err)
+			}
 		}
 	}()
+
 	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
-
-	<-signalChan
-
-	logrus.Info("Shutting down server...")
-
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	sig := <-signalChan
+	logrus.Infof("Shutting down server with signal : %v...", sig)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	if err = server.Shutdown(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "HTTP server Shutdown: %v\n", err)
+		logrus.Errorf("HTTP server Shutdown error: %v\n", err)
 	}
 	//If the server shutting down, save batch to file
-	if repositoryReciver {
+	if repositoryReceiver {
 		err = myRepository.(services.URLInMemoryRepository).SaveBatchToFile()
 		if err != nil {
 			logrus.Error(err)
